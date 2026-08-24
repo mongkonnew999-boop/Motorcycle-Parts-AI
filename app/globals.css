@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; }
+body { margin: 0; background: #080d16; color: #eaf0ff; font-family: Arial, "Noto Sans Thai", sans-serif; }
+button, select, input, textarea { font: inherit; }
+button { cursor: pointer; }
+::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background:#30415f; border-radius:999px; }
