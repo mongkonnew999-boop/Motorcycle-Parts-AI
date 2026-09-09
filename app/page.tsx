@@ -44,6 +44,22 @@ type Slot = {
   note: string;
 };
 type SavedWork = Slot & { date: string; savedAt: string };
+type QuickPartWork = {
+  id: string;
+  createdAt: string;
+  brand: string;
+  model: string;
+  yearRange: string;
+  part: string;
+  note: string;
+};
+type ProductPrefill = {
+  name: string;
+  brand: string;
+  vehicleModel: string;
+  year: string;
+  description?: string;
+};
 type ProductWork = {
   id: string;
   createdAt: string;
@@ -1449,6 +1465,8 @@ const [selectedChannel, setSelectedChannel] = useState("");
   const [slots, setSlots] = useState<Slot[]>(makeSlots);
   const [saved, setSaved] = useState<SavedWork[]>([]);
   const [productWorks, setProductWorks] = useState<ProductWork[]>([]);
+  const [quickPartWorks, setQuickPartWorks] = useState<QuickPartWork[]>([]);
+  const [productPrefill, setProductPrefill] = useState<ProductPrefill | null>(null);
   const [aiProvider, setAiProvider] = useState<"openai" | "gemini">("openai");
   const [aiStatus, setAiStatus] = useState({ openai: false, gemini: false });
   const [selected, setSelected] = useState<Slot | null>(null);
@@ -1458,11 +1476,13 @@ const [selectedChannel, setSelectedChannel] = useState("");
   useEffect(() => {
     const x = localStorage.getItem(`mpai-plan-${date}`),
       y = localStorage.getItem("mpai-saved"),
-      z = localStorage.getItem("mpai-product-works");
+      z = localStorage.getItem("mpai-product-works"),
+      q = localStorage.getItem("mpai-quick-part-history");
     if (x) setSlots(JSON.parse(x));
     else setSlots(makeSlots());
     if (y) setSaved(JSON.parse(y));
     if (z) setProductWorks(JSON.parse(z));
+    if (q) setQuickPartWorks(JSON.parse(q));
     const provider = localStorage.getItem("ai_provider");
     if (provider === "openai" || provider === "gemini") setAiProvider(provider);
     fetch("/api/ai/status").then((r) => r.json()).then(setAiStatus).catch(() => undefined);
@@ -1517,6 +1537,7 @@ const [selectedChannel, setSelectedChannel] = useState("");
   const menuItems = [
     ["หน้าหลัก", Sparkles],
     ["ตารางขายประจำวัน", CalendarDays],
+    ["เลือกอะไหล่มาทำ", ShoppingBag],
     ["ช่อง TikTok", Bike],
     ["รุ่นรถทั้งหมด", ClipboardList],
     ["ตระกูลอะไหล่ร่วม", Package],
@@ -1528,6 +1549,31 @@ const [selectedChannel, setSelectedChannel] = useState("");
   const related = vehicles.filter((v) =>
     chosen.relatedModels.includes(v.model),
   );
+  const saveQuickPartWork = (work: Omit<QuickPartWork, "id" | "createdAt">) => {
+    const item: QuickPartWork = {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toLocaleString("th-TH"),
+      ...work,
+    };
+    const next = [item, ...quickPartWorks];
+    setQuickPartWorks(next);
+    localStorage.setItem("mpai-quick-part-history", JSON.stringify(next));
+  };
+  const deleteQuickPartWork = (id: string) => {
+    const next = quickPartWorks.filter((x) => x.id !== id);
+    setQuickPartWorks(next);
+    localStorage.setItem("mpai-quick-part-history", JSON.stringify(next));
+  };
+  const startQuickPartWork = (work: Omit<QuickPartWork, "id" | "createdAt">) => {
+    setProductPrefill({
+      name: work.part,
+      brand: work.brand,
+      vehicleModel: work.model,
+      year: work.yearRange,
+      description: work.note,
+    });
+    setPage("สร้างงานขายสินค้า");
+  };
   const saveProductWork = (work: ProductWork) => {
     const next = [work, ...productWorks];
     setProductWorks(next);
@@ -1633,7 +1679,20 @@ const [selectedChannel, setSelectedChannel] = useState("");
             </>
           )}
           {page === "สร้างงานขายสินค้า" && (
-            <AIProductCreator provider={aiProvider} onProviderChange={chooseAI} onSave={saveProductWork} />
+            <AIProductCreator
+              provider={aiProvider}
+              onProviderChange={chooseAI}
+              onSave={saveProductWork}
+              initial={productPrefill}
+            />
+          )}
+          {page === "เลือกอะไหล่มาทำ" && (
+            <QuickPartSelector
+              rows={quickPartWorks}
+              onStart={startQuickPartWork}
+              onSave={saveQuickPartWork}
+              onDelete={deleteQuickPartWork}
+            />
           )}
           {page === "ตารางขายประจำวัน" && (
             <>
@@ -2020,6 +2079,147 @@ function Editor({
     </div>
   );
 }
+function QuickPartSelector({
+  rows,
+  onStart,
+  onSave,
+  onDelete,
+}: {
+  rows: QuickPartWork[];
+  onStart: (work: Omit<QuickPartWork, "id" | "createdAt">) => void;
+  onSave: (work: Omit<QuickPartWork, "id" | "createdAt">) => void;
+  onDelete: (id: string) => void;
+}) {
+  const brands = [...new Set(vehicles.map((v) => v.brand))];
+  const [brand, setBrand] = useState(brands[0] || "HONDA");
+  const brandModels = vehicles
+    .filter((v) => v.brand === brand)
+    .sort((a, b) => a.model.localeCompare(b.model));
+  const [model, setModel] = useState(brandModels[0]?.model || "");
+  const [part, setPart] = useState(parts[0] || "");
+  const [note, setNote] = useState("");
+  const chosenVehicle = vehicles.find((v) => v.model === model);
+
+  const changeBrand = (nextBrand: string) => {
+    setBrand(nextBrand);
+    const first = vehicles
+      .filter((v) => v.brand === nextBrand)
+      .sort((a, b) => a.model.localeCompare(b.model))[0];
+    setModel(first?.model || "");
+  };
+  const payload = () => ({
+    brand,
+    model,
+    yearRange: chosenVehicle?.yearRange || "",
+    part,
+    note,
+  });
+  const saveDone = () => {
+    if (!model || !part) return;
+    onSave(payload());
+    setNote("");
+    alert("บันทึกประวัติการทำงานแล้ว");
+  };
+  const start = () => {
+    if (!model || !part) return;
+    onStart(payload());
+  };
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-6">
+      <section className="rounded-2xl border border-orange-500/30 bg-slate-900 p-5">
+        <div className="mb-5">
+          <h2 className="text-2xl font-bold">เลือกอะไหล่มาทำ</h2>
+          <p className="mt-1 text-slate-400">
+            เลือกรถและอะไหล่ที่ต้องการทำเอง แล้วบันทึกย้อนหลังได้ว่าทำรุ่นไหนไปแล้ว
+          </p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Select label="ยี่ห้อรถ" value={brand} onChange={changeBrand} options={brands} />
+          <Select
+            label="รุ่นรถ"
+            value={model}
+            onChange={setModel}
+            options={brandModels.map((v) => v.model)}
+          />
+          <Select label="อะไหล่ที่จะทำ" value={part} onChange={setPart} options={parts} />
+          <div className="rounded-xl border border-slate-700 bg-slate-800 p-3 text-sm">
+            <span className="text-slate-400">ช่วงปีรถ</span>
+            <b className="mt-1 block text-base">{chosenVehicle?.yearRange || "-"}</b>
+          </div>
+        </div>
+        <label className="mt-4 block text-sm text-slate-300">
+          หมายเหตุ
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="เช่น ทำคลิปแล้ว / รอรูปสินค้า / รอเช็กราคา"
+            className="mt-1 min-h-20 w-full rounded-lg border border-slate-700 bg-slate-800 p-3 text-white"
+          />
+        </label>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          <button
+            onClick={start}
+            className="rounded-xl bg-orange-500 px-5 py-3 font-bold transition hover:bg-orange-400"
+          >
+            สร้างงานขายสินค้านี้ →
+          </button>
+          <button
+            onClick={saveDone}
+            className="rounded-xl bg-emerald-600 px-5 py-3 font-bold transition hover:bg-emerald-500"
+          >
+            ✓ บันทึกว่าทำแล้ว
+          </button>
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-xl font-bold">ประวัติอะไหล่ที่ทำแล้ว</h3>
+            <p className="text-sm text-slate-400">ดูย้อนหลังได้ทั้งหมด · {rows.length} รายการ</p>
+          </div>
+        </div>
+        {rows.length === 0 ? (
+          <Empty
+            title="ยังไม่มีประวัติการทำงาน"
+            text="เลือกรุ่นรถและอะไหล่ แล้วกด “บันทึกว่าทำแล้ว” เพื่อเก็บไว้ดูย้อนหลัง"
+          />
+        ) : (
+          <div className="space-y-3">
+            {rows.map((w) => (
+              <div
+                key={w.id}
+                className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-800 bg-[#0d1421] p-4"
+              >
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <b className="text-lg">{w.model}</b>
+                    <span className="rounded-full bg-orange-500/15 px-2 py-1 text-xs text-orange-300">
+                      {w.brand}
+                    </span>
+                  </div>
+                  <p className="mt-1 font-semibold text-emerald-300">{w.part}</p>
+                  <p className="mt-1 text-sm text-slate-400">
+                    ปี {w.yearRange || "-"} · {w.createdAt}
+                  </p>
+                  {w.note && <p className="mt-2 text-sm text-slate-300">หมายเหตุ: {w.note}</p>}
+                </div>
+                <button
+                  onClick={() => onDelete(w.id)}
+                  className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300 hover:bg-red-500/20"
+                >
+                  ลบ
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function Select({
   label,
   value,
@@ -2162,7 +2362,7 @@ function Empty({ title, text }: { title: string; text: string }) {
 
 type UIAIResult = { analysis: { productName:string; productType:string; shape:string; color:string; material:string; estimatedSize:string; compatibleModels:string[]; sellingPoints:string[]; recommendedCharacter:string; recommendedScene:string }; imagePrompt:string; videoScenes:{scene:number;videoPrompt:string;thaiSpeech:string}[]; caption:string; hashtags:string[] };
 function AISettings({provider,status,onProviderChange}:{provider:"openai"|"gemini";status:{openai:boolean;gemini:boolean};onProviderChange:(p:"openai"|"gemini")=>void}) { const [message,setMessage]=useState(""); const test=async(p:"openai"|"gemini")=>{setMessage("กำลังทดสอบ AI...");try{const r=await fetch("/api/ai/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:p})});const d=await r.json();setMessage(d.message||d.error)}catch{setMessage("AI ไม่สามารถประมวลผลได้ กรุณาลองใหม่อีกครั้ง")}}; return <div className="mx-auto max-w-3xl"><h2 className="mb-2 text-xl font-bold">ผู้ให้บริการ AI</h2><p className="mb-5 text-slate-400">เลือกผู้ให้บริการสำหรับวิเคราะห์สินค้าและสร้างคอนเทนต์ (API Key อยู่เฉพาะฝั่งเซิร์ฟเวอร์)</p><div className="grid gap-4 md:grid-cols-2">{(["openai","gemini"] as const).map(p=><div key={p} className={`rounded-2xl border p-5 ${provider===p?'border-orange-500 bg-orange-500/10':'border-slate-700 bg-slate-900'}`}><button onClick={()=>onProviderChange(p)} className="w-full text-left"><b className="text-xl">{p==="openai"?"OpenAI":"Google Gemini"}</b><p className={`mt-2 ${status[p]?'text-emerald-400':'text-amber-300'}`}>{status[p]?"● พร้อมใช้งาน":"● ยังไม่ได้ใส่ API Key"}</p><p className="mt-2 text-sm text-slate-400">{provider===p?"กำลังเลือกใช้งาน":"กดเพื่อเลือกใช้"}</p></button><button onClick={()=>test(p)} className="mt-4 w-full rounded-lg bg-slate-800 px-4 py-3 hover:bg-slate-700">ทดสอบ {p==="openai"?"OpenAI":"Gemini"}</button></div>)}</div>{message&&<div className="mt-5 rounded-xl border border-slate-700 bg-slate-900 p-4">{message}</div>}<p className="mt-6 text-sm text-slate-400">ตั้งค่า Key ที่ไฟล์ <code className="text-orange-300">.env.local</code> โดยใช้ OPENAI_API_KEY หรือ GEMINI_API_KEY และรีสตาร์ตเซิร์ฟเวอร์</p></div>}
-function AIProductCreator({provider,onProviderChange,onSave}:{provider:"openai"|"gemini";onProviderChange:(p:"openai"|"gemini")=>void;onSave:(work:ProductWork)=>void}) { const [photos,setPhotos]=useState<string[]>([]);const [name,setName]=useState("");const [brand,setBrand]=useState("");const [vehicleModel,setVehicleModel]=useState("");const [year,setYear]=useState("");const [partCode,setPartCode]=useState("");const [description,setDescription]=useState("");const [channel,setChannel]=useState<"TikTok"|"Shopee">("TikTok");const [character,setCharacter]=useState("");const [scene,setScene]=useState("");const [lens,setLens]=useState<"Hero"|"Macro">("Hero");const [sceneCount,setSceneCount]=useState(2);const [result,setResult]=useState<UIAIResult|null>(null);const [loading,setLoading]=useState(false);const [error,setError]=useState("");const compress=(file:File)=>new Promise<string>((resolve,reject)=>{const r=new FileReader();r.onload=()=>{const img=new Image();img.onload=()=>{const scale=Math.min(1,1280/Math.max(img.width,img.height));const c=document.createElement("canvas");c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);c.getContext("2d")?.drawImage(img,0,0,c.width,c.height);resolve(c.toDataURL("image/jpeg",.84))};img.onerror=()=>reject();img.src=String(r.result)};r.onerror=()=>reject();r.readAsDataURL(file)});const upload=async(list:FileList|null)=>{if(!list)return;const next=await Promise.all(Array.from(list).slice(0,5-photos.length).map(compress));setPhotos(p=>[...p,...next])};const generate=async()=>{setError("");setLoading(true);try{const r=await fetch("/api/ai/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider,task:"generate",images:photos,productData:{name,brand,vehicleModel,year,partCode,description,channel,sceneCount,lens,character,scene}})});const data=await r.json();if(!r.ok)throw new Error(data.error);setResult(data);setCharacter(data.analysis.recommendedCharacter||character);setScene(data.analysis.recommendedScene||scene)}catch(e){setError(e instanceof Error?e.message:"AI ไม่สามารถประมวลผลได้ กรุณาลองใหม่อีกครั้ง")}finally{setLoading(false)}};const copy=(text:string)=>navigator.clipboard.writeText(text).then(()=>alert("คัดลอกเรียบร้อยแล้ว"));const save=()=>{if(!result)return;const a=result.analysis;onSave({id:crypto.randomUUID(),createdAt:new Date().toLocaleString("th-TH"),photos,name:a.productName||name,brand,vehicleModel,year,partCode,description,channel,analysis:[`สินค้าคือ: ${a.productType}`,`รูปร่าง: ${a.shape}`,`สี: ${a.color}`,`วัสดุ: ${a.material}`,`ขนาด: ${a.estimatedSize}`,...a.sellingPoints],character:character||a.recommendedCharacter,scene:scene||a.recommendedScene,lens,imagePrompt:result.imagePrompt,videoScenes:result.videoScenes.map(s=>({prompt:s.videoPrompt,speech:s.thaiSpeech})),caption:result.caption,hashtags:result.hashtags})};return <div className="mx-auto max-w-5xl space-y-6"><div className="rounded-2xl border border-orange-500/40 bg-slate-900 p-5"><div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="text-2xl font-bold">สร้างงานขายสินค้า</h2><p className="mt-1 text-slate-400">AI ที่กำลังใช้: <b className="text-orange-300">{provider==="openai"?"OpenAI":"Gemini"}</b></p></div><div className="flex gap-2"><select value={provider} onChange={e=>onProviderChange(e.target.value as "openai"|"gemini")} className="rounded-lg bg-slate-800 px-3 py-2"><option value="openai">OpenAI</option><option value="gemini">Gemini</option></select><button disabled={loading} onClick={generate} className="rounded-xl bg-orange-500 px-5 py-3 font-bold disabled:opacity-50"><Wand2 className="mr-2 inline"/>{loading?"AI กำลังวิเคราะห์สินค้า กรุณารอสักครู่...":"AI สร้างทั้งหมด"}</button></div></div></div><section className="rounded-2xl border border-slate-800 bg-slate-900 p-5"><h3 className="mb-4 text-lg font-bold">ข้อมูลสินค้า</h3><label className="mb-4 block rounded-xl border-2 border-dashed border-slate-700 p-5 text-center"><ImageIcon className="mx-auto mb-2 text-orange-400"/><b>อัปโหลดรูปสินค้า 1–5 รูป</b><input className="hidden" type="file" accept="image/*" multiple onChange={e=>upload(e.target.files)}/></label><div className="mb-4 flex gap-2 overflow-x-auto">{photos.map((p,i)=><div className="relative shrink-0" key={p}><img className="h-20 w-20 rounded-lg object-cover" src={p} alt="รูปสินค้า"/><button onClick={()=>setPhotos(photos.filter((_,x)=>x!==i))} className="absolute -right-1 -top-1 rounded-full bg-red-500 p-1"><X size={12}/></button></div>)}</div><div className="grid gap-3 md:grid-cols-2"><Input label="ชื่อสินค้า" value={name} set={setName}/><Input label="ยี่ห้อ" value={brand} set={setBrand}/><Input label="รุ่นรถ" value={vehicleModel} set={setVehicleModel}/><Input label="ปีรถ" value={year} set={setYear}/><Input label="รหัสอะไหล่" value={partCode} set={setPartCode}/><label className="text-sm">ช่องที่จะขาย<select value={channel} onChange={e=>setChannel(e.target.value as "TikTok"|"Shopee")} className="mt-1 w-full rounded-lg bg-slate-800 p-3"><option>TikTok</option><option>Shopee</option></select></label></div><label className="mt-3 block text-sm">รายละเอียดสินค้า<textarea value={description} onChange={e=>setDescription(e.target.value)} className="mt-1 min-h-20 w-full rounded-lg bg-slate-800 p-3"/></label><div className="mt-4 flex flex-wrap gap-2"><button onClick={generate} disabled={loading} className="rounded-lg bg-blue-600 px-5 py-3 font-bold disabled:opacity-50">AI วิเคราะห์สินค้า</button><button onClick={()=>{setCharacter("");setScene("");generate()}} disabled={loading} className="rounded-lg bg-slate-800 px-5 py-3">AI คิดให้</button><button onClick={()=>setCharacter(character?"":"ช่างหญิงไทย ชุดช่างสีดำ")} className="rounded-lg bg-slate-800 px-5 py-3">เปลี่ยนชุดตัวละคร</button><button onClick={()=>setScene(scene?"":"Workshop มอเตอร์ไซค์สมัยใหม่")} className="rounded-lg bg-slate-800 px-5 py-3">เปลี่ยนฉาก</button></div></section>{error&&<div className="rounded-xl border border-red-500/50 bg-red-500/10 p-4 text-red-200">{error}</div>}{result&&<><section className="rounded-2xl border border-slate-800 bg-slate-900 p-5"><h3 className="mb-3 text-lg font-bold">ผลวิเคราะห์สินค้า</h3><div className="grid gap-3 md:grid-cols-2">{Object.entries(result.analysis).filter(([k])=>!['compatibleModels','sellingPoints'].includes(k)).map(([k,v])=><div key={k} className="rounded-lg bg-slate-800 p-3"><b>{({productName:'สินค้า',productType:'ประเภท',shape:'รูปร่าง',color:'สี',material:'วัสดุ',estimatedSize:'ขนาดโดยประมาณ',recommendedCharacter:'ชุดตัวละคร',recommendedScene:'ฉากหลัง'} as Record<string,string>)[k]}: </b>{String(v)}</div>)}</div><p className="mt-3 text-sm text-slate-300">รถรุ่นที่ใช้ได้: {result.analysis.compatibleModels.join(', ')}</p><p className="mt-2 text-sm text-slate-300">จุดเด่น: {result.analysis.sellingPoints.join(' · ')}</p></section><section className="rounded-2xl border border-slate-800 bg-slate-900 p-5"><h3 className="mb-3 text-lg font-bold">สร้างภาพโฆษณา</h3><div className="mb-3 flex gap-2">{(['Hero','Macro'] as const).map(x=><button key={x} onClick={()=>setLens(x)} className={`rounded-lg px-4 py-2 ${lens===x?'bg-orange-500':'bg-slate-800'}`}>เลนส์ {x}</button>)}</div><PromptBox label="Image Prompt ภาษาอังกฤษ · 9:16" text={result.imagePrompt} onCopy={()=>copy(result.imagePrompt)}/></section><section className="rounded-2xl border border-slate-800 bg-slate-900 p-5"><h3 className="mb-3 text-lg font-bold">วิดีโอ</h3><div className="mb-3 flex gap-2">{[1,2,3].map(n=><button key={n} onClick={()=>setSceneCount(n)} className={`rounded-lg px-4 py-2 ${sceneCount===n?'bg-orange-500':'bg-slate-800'}`}>{n} ฉาก</button>)}</div>{result.videoScenes.map(s=><div key={s.scene} className="mb-3 rounded-lg border border-slate-700 p-4"><b>ฉาก {s.scene}</b><PromptBox label="Video Prompt ภาษาอังกฤษ" text={s.videoPrompt} onCopy={()=>copy(`${s.videoPrompt}\nบทพูด: ${s.thaiSpeech}`)}/><p className="mt-3 rounded-lg bg-orange-500/10 p-3">บทพูดประมาณ 8 วินาที: {s.thaiSpeech}</p></div>)}<button onClick={()=>copy(result.videoScenes.map(s=>`${s.videoPrompt}\nบทพูด: ${s.thaiSpeech}`).join('\n\n'))} className="w-full rounded-lg bg-slate-800 py-3">คัดลอก Video Prompt + บทพูด</button></section><section className="rounded-2xl border border-slate-800 bg-slate-900 p-5"><h3 className="mb-2 text-lg font-bold">Caption + Hashtags</h3><p className="rounded-lg bg-slate-800 p-4">{result.caption}<br/><span className="text-orange-300">{result.hashtags.join(' ')}</span></p><button onClick={()=>copy(`${result.caption}\n${result.hashtags.join(' ')}`)} className="mt-3 w-full rounded-lg bg-slate-800 py-3">คัดลอก Caption + Hashtags</button></section><button onClick={save} className="w-full rounded-2xl bg-emerald-600 py-5 text-xl font-bold">บันทึกผลงาน</button></>}</div>}
+function AIProductCreator({provider,onProviderChange,onSave,initial}:{provider:"openai"|"gemini";onProviderChange:(p:"openai"|"gemini")=>void;onSave:(work:ProductWork)=>void;initial?:ProductPrefill|null}) { const [photos,setPhotos]=useState<string[]>([]);const [name,setName]=useState(initial?.name||"");const [brand,setBrand]=useState(initial?.brand||"");const [vehicleModel,setVehicleModel]=useState(initial?.vehicleModel||"");const [year,setYear]=useState(initial?.year||"");const [partCode,setPartCode]=useState("");const [description,setDescription]=useState(initial?.description||"");const [channel,setChannel]=useState<"TikTok"|"Shopee">("TikTok");const [character,setCharacter]=useState("");const [scene,setScene]=useState("");const [lens,setLens]=useState<"Hero"|"Macro">("Hero");const [sceneCount,setSceneCount]=useState(2);const [result,setResult]=useState<UIAIResult|null>(null);const [loading,setLoading]=useState(false);const [error,setError]=useState("");const compress=(file:File)=>new Promise<string>((resolve,reject)=>{const r=new FileReader();r.onload=()=>{const img=new Image();img.onload=()=>{const scale=Math.min(1,1280/Math.max(img.width,img.height));const c=document.createElement("canvas");c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);c.getContext("2d")?.drawImage(img,0,0,c.width,c.height);resolve(c.toDataURL("image/jpeg",.84))};img.onerror=()=>reject();img.src=String(r.result)};r.onerror=()=>reject();r.readAsDataURL(file)});const upload=async(list:FileList|null)=>{if(!list)return;const next=await Promise.all(Array.from(list).slice(0,5-photos.length).map(compress));setPhotos(p=>[...p,...next])};const generate=async()=>{setError("");setLoading(true);try{const r=await fetch("/api/ai/generate",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider,task:"generate",images:photos,productData:{name,brand,vehicleModel,year,partCode,description,channel,sceneCount,lens,character,scene}})});const data=await r.json();if(!r.ok)throw new Error(data.error);setResult(data);setCharacter(data.analysis.recommendedCharacter||character);setScene(data.analysis.recommendedScene||scene)}catch(e){setError(e instanceof Error?e.message:"AI ไม่สามารถประมวลผลได้ กรุณาลองใหม่อีกครั้ง")}finally{setLoading(false)}};const copy=(text:string)=>navigator.clipboard.writeText(text).then(()=>alert("คัดลอกเรียบร้อยแล้ว"));const save=()=>{if(!result)return;const a=result.analysis;onSave({id:crypto.randomUUID(),createdAt:new Date().toLocaleString("th-TH"),photos,name:a.productName||name,brand,vehicleModel,year,partCode,description,channel,analysis:[`สินค้าคือ: ${a.productType}`,`รูปร่าง: ${a.shape}`,`สี: ${a.color}`,`วัสดุ: ${a.material}`,`ขนาด: ${a.estimatedSize}`,...a.sellingPoints],character:character||a.recommendedCharacter,scene:scene||a.recommendedScene,lens,imagePrompt:result.imagePrompt,videoScenes:result.videoScenes.map(s=>({prompt:s.videoPrompt,speech:s.thaiSpeech})),caption:result.caption,hashtags:result.hashtags})};return <div className="mx-auto max-w-5xl space-y-6"><div className="rounded-2xl border border-orange-500/40 bg-slate-900 p-5"><div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="text-2xl font-bold">สร้างงานขายสินค้า</h2><p className="mt-1 text-slate-400">AI ที่กำลังใช้: <b className="text-orange-300">{provider==="openai"?"OpenAI":"Gemini"}</b></p></div><div className="flex gap-2"><select value={provider} onChange={e=>onProviderChange(e.target.value as "openai"|"gemini")} className="rounded-lg bg-slate-800 px-3 py-2"><option value="openai">OpenAI</option><option value="gemini">Gemini</option></select><button disabled={loading} onClick={generate} className="rounded-xl bg-orange-500 px-5 py-3 font-bold disabled:opacity-50"><Wand2 className="mr-2 inline"/>{loading?"AI กำลังวิเคราะห์สินค้า กรุณารอสักครู่...":"AI สร้างทั้งหมด"}</button></div></div></div><section className="rounded-2xl border border-slate-800 bg-slate-900 p-5"><h3 className="mb-4 text-lg font-bold">ข้อมูลสินค้า</h3><label className="mb-4 block rounded-xl border-2 border-dashed border-slate-700 p-5 text-center"><ImageIcon className="mx-auto mb-2 text-orange-400"/><b>อัปโหลดรูปสินค้า 1–5 รูป</b><input className="hidden" type="file" accept="image/*" multiple onChange={e=>upload(e.target.files)}/></label><div className="mb-4 flex gap-2 overflow-x-auto">{photos.map((p,i)=><div className="relative shrink-0" key={p}><img className="h-20 w-20 rounded-lg object-cover" src={p} alt="รูปสินค้า"/><button onClick={()=>setPhotos(photos.filter((_,x)=>x!==i))} className="absolute -right-1 -top-1 rounded-full bg-red-500 p-1"><X size={12}/></button></div>)}</div><div className="grid gap-3 md:grid-cols-2"><Input label="ชื่อสินค้า" value={name} set={setName}/><Input label="ยี่ห้อ" value={brand} set={setBrand}/><Input label="รุ่นรถ" value={vehicleModel} set={setVehicleModel}/><Input label="ปีรถ" value={year} set={setYear}/><Input label="รหัสอะไหล่" value={partCode} set={setPartCode}/><label className="text-sm">ช่องที่จะขาย<select value={channel} onChange={e=>setChannel(e.target.value as "TikTok"|"Shopee")} className="mt-1 w-full rounded-lg bg-slate-800 p-3"><option>TikTok</option><option>Shopee</option></select></label></div><label className="mt-3 block text-sm">รายละเอียดสินค้า<textarea value={description} onChange={e=>setDescription(e.target.value)} className="mt-1 min-h-20 w-full rounded-lg bg-slate-800 p-3"/></label><div className="mt-4 flex flex-wrap gap-2"><button onClick={generate} disabled={loading} className="rounded-lg bg-blue-600 px-5 py-3 font-bold disabled:opacity-50">AI วิเคราะห์สินค้า</button><button onClick={()=>{setCharacter("");setScene("");generate()}} disabled={loading} className="rounded-lg bg-slate-800 px-5 py-3">AI คิดให้</button><button onClick={()=>setCharacter(character?"":"ช่างหญิงไทย ชุดช่างสีดำ")} className="rounded-lg bg-slate-800 px-5 py-3">เปลี่ยนชุดตัวละคร</button><button onClick={()=>setScene(scene?"":"Workshop มอเตอร์ไซค์สมัยใหม่")} className="rounded-lg bg-slate-800 px-5 py-3">เปลี่ยนฉาก</button></div></section>{error&&<div className="rounded-xl border border-red-500/50 bg-red-500/10 p-4 text-red-200">{error}</div>}{result&&<><section className="rounded-2xl border border-slate-800 bg-slate-900 p-5"><h3 className="mb-3 text-lg font-bold">ผลวิเคราะห์สินค้า</h3><div className="grid gap-3 md:grid-cols-2">{Object.entries(result.analysis).filter(([k])=>!['compatibleModels','sellingPoints'].includes(k)).map(([k,v])=><div key={k} className="rounded-lg bg-slate-800 p-3"><b>{({productName:'สินค้า',productType:'ประเภท',shape:'รูปร่าง',color:'สี',material:'วัสดุ',estimatedSize:'ขนาดโดยประมาณ',recommendedCharacter:'ชุดตัวละคร',recommendedScene:'ฉากหลัง'} as Record<string,string>)[k]}: </b>{String(v)}</div>)}</div><p className="mt-3 text-sm text-slate-300">รถรุ่นที่ใช้ได้: {result.analysis.compatibleModels.join(', ')}</p><p className="mt-2 text-sm text-slate-300">จุดเด่น: {result.analysis.sellingPoints.join(' · ')}</p></section><section className="rounded-2xl border border-slate-800 bg-slate-900 p-5"><h3 className="mb-3 text-lg font-bold">สร้างภาพโฆษณา</h3><div className="mb-3 flex gap-2">{(['Hero','Macro'] as const).map(x=><button key={x} onClick={()=>setLens(x)} className={`rounded-lg px-4 py-2 ${lens===x?'bg-orange-500':'bg-slate-800'}`}>เลนส์ {x}</button>)}</div><PromptBox label="Image Prompt ภาษาอังกฤษ · 9:16" text={result.imagePrompt} onCopy={()=>copy(result.imagePrompt)}/></section><section className="rounded-2xl border border-slate-800 bg-slate-900 p-5"><h3 className="mb-3 text-lg font-bold">วิดีโอ</h3><div className="mb-3 flex gap-2">{[1,2,3].map(n=><button key={n} onClick={()=>setSceneCount(n)} className={`rounded-lg px-4 py-2 ${sceneCount===n?'bg-orange-500':'bg-slate-800'}`}>{n} ฉาก</button>)}</div>{result.videoScenes.map(s=><div key={s.scene} className="mb-3 rounded-lg border border-slate-700 p-4"><b>ฉาก {s.scene}</b><PromptBox label="Video Prompt ภาษาอังกฤษ" text={s.videoPrompt} onCopy={()=>copy(`${s.videoPrompt}\nบทพูด: ${s.thaiSpeech}`)}/><p className="mt-3 rounded-lg bg-orange-500/10 p-3">บทพูดประมาณ 8 วินาที: {s.thaiSpeech}</p></div>)}<button onClick={()=>copy(result.videoScenes.map(s=>`${s.videoPrompt}\nบทพูด: ${s.thaiSpeech}`).join('\n\n'))} className="w-full rounded-lg bg-slate-800 py-3">คัดลอก Video Prompt + บทพูด</button></section><section className="rounded-2xl border border-slate-800 bg-slate-900 p-5"><h3 className="mb-2 text-lg font-bold">Caption + Hashtags</h3><p className="rounded-lg bg-slate-800 p-4">{result.caption}<br/><span className="text-orange-300">{result.hashtags.join(' ')}</span></p><button onClick={()=>copy(`${result.caption}\n${result.hashtags.join(' ')}`)} className="mt-3 w-full rounded-lg bg-slate-800 py-3">คัดลอก Caption + Hashtags</button></section><button onClick={save} className="w-full rounded-2xl bg-emerald-600 py-5 text-xl font-bold">บันทึกผลงาน</button></>}</div>}
 function ProductCreator({ onSave }: { onSave: (work: ProductWork) => void }) {
   const [photos, setPhotos] = useState<string[]>([]);
   const [name, setName] = useState("");
