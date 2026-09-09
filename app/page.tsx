@@ -1939,7 +1939,9 @@ function Editor({
   onSave: (s: Slot) => void;
 }) {
   const [draft, setDraft] = useState(slot);
-  const family = vehicles.filter((v) => v.family === draft.vehicles[0].family);
+  const allVehicleOptions = [...vehicles].sort((a, b) =>
+    `${a.brand}-${a.model}`.localeCompare(`${b.brand}-${b.model}`),
+  );
   const updateVehicle = (i: number, m: string) => {
     const next = [...draft.vehicles];
     next[i] = vehicles.find((v) => v.model === m)!;
@@ -1959,7 +1961,7 @@ function Editor({
           <div>
             <h2 className="text-xl font-bold">แก้ไขแผน: {slot.channel}</h2>
             <p className="text-sm text-slate-400">
-              เลือกรุ่นในตระกูลใกล้เคียงกัน
+              เลือกรุ่นรถได้จากฐานข้อมูลทั้งหมดทุกยี่ห้อ
             </p>
           </div>
           <button onClick={onClose} className="rounded-lg bg-slate-800 p-2">
@@ -1973,7 +1975,7 @@ function Editor({
               label={`รถรุ่นที่ ${i + 1}`}
               value={v.model}
               onChange={(x) => updateVehicle(i, x)}
-              options={family.map((x) => x.model)}
+              options={allVehicleOptions.map((x) => x.model)}
             />
           ))}
         </div>
