@@ -22,6 +22,7 @@ import {
   Copy,
   Wand2,
   Video,
+  Flame,
 } from "lucide-react";
 
 type Status = "ยังไม่ได้ทำ" | "กำลังทำ" | "เสร็จแล้ว";
@@ -44,6 +45,15 @@ type Slot = {
   note: string;
 };
 type SavedWork = Slot & { date: string; savedAt: string };
+type ModelUsage = {
+  model: string;
+  brand: string;
+  yearRange: string;
+  channel: string;
+  usedAt: string;
+  date: string;
+  cycle: number;
+};
 type QuickPartWork = {
   id: string;
   createdAt: string;
@@ -1438,7 +1448,7 @@ const makeSlots = (): Slot[] =>
   channels.map((channel, i) => ({
     id: `slot-${i}`,
     channel,
-    vehicles: defaults[i].map((m) => vehicles.find((v) => v.model === m)!),
+    vehicles: defaults[i].map((m) => vehicles.find((v) => v.model === m)!).filter(Boolean),
     parts:
       i === 0
         ? ["ชุดชามหน้า", "โซ่สเตอร์"]
@@ -1448,6 +1458,41 @@ const makeSlots = (): Slot[] =>
     status: "ยังไม่ได้ทำ",
     note: "",
   }));
+
+const modelKey = (v: Vehicle) => `${v.brand}::${v.model}::${v.yearRange}`;
+const smartSlots = (usage: ModelUsage[], date: string): Slot[] => {
+  const latestCycle = usage.reduce((n, x) => Math.max(n, x.cycle || 1), 1);
+  let used = new Set(usage.filter((x) => (x.cycle || 1) === latestCycle).map((x) => `${x.brand}::${x.model}::${x.yearRange}`));
+  let cycle = latestCycle;
+  if (vehicles.every((v) => used.has(modelKey(v)))) { used = new Set(); cycle += 1; }
+  const assigned = new Set<string>();
+  const score = (v: Vehicle, channelIndex: number) => {
+    const text = `${date}-${channelIndex}-${v.brand}-${v.model}`;
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+    const fresh = v.generation === "รุ่นใหม่" ? 5000 : 0;
+    return fresh + (h >>> 0) / 4294967296;
+  };
+  return channels.map((channel, i) => {
+    let pool = vehicles.filter((v) => !used.has(modelKey(v)) && !assigned.has(modelKey(v)));
+    if (pool.length < 3) pool = vehicles.filter((v) => !assigned.has(modelKey(v)));
+    const ranked = [...pool].sort((a, b) => score(b, i) - score(a, i));
+    const pick: Vehicle[] = [];
+    const brandsUsed = new Set<string>();
+    for (const v of ranked) {
+      if (!brandsUsed.has(v.brand)) { pick.push(v); brandsUsed.add(v.brand); }
+      if (pick.length === 3) break;
+    }
+    if (pick.length < 3) {
+      for (const v of ranked) {
+        if (!pick.some((x) => modelKey(x) === modelKey(v))) pick.push(v);
+        if (pick.length === 3) break;
+      }
+    }
+    pick.forEach((v) => assigned.add(modelKey(v)));
+    return { id: `slot-${i}`, channel, vehicles: pick, parts: [], status: "ยังไม่ได้ทำ" as Status, note: `AI Rotation Cycle ${cycle}` };
+  });
+};
 const statusColor: Record<Status, string> = {
   ยังไม่ได้ทำ: "#73819a",
   กำลังทำ: "#f6b84a",
@@ -1464,6 +1509,7 @@ const [selectedChannel, setSelectedChannel] = useState("");
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [slots, setSlots] = useState<Slot[]>(makeSlots);
   const [saved, setSaved] = useState<SavedWork[]>([]);
+  const [modelUsage, setModelUsage] = useState<ModelUsage[]>([]);
   const [productWorks, setProductWorks] = useState<ProductWork[]>([]);
   const [quickPartWorks, setQuickPartWorks] = useState<QuickPartWork[]>([]);
   const [productPrefill, setProductPrefill] = useState<ProductPrefill | null>(null);
@@ -1477,9 +1523,12 @@ const [selectedChannel, setSelectedChannel] = useState("");
     const x = localStorage.getItem(`mpai-plan-${date}`),
       y = localStorage.getItem("mpai-saved"),
       z = localStorage.getItem("mpai-product-works"),
-      q = localStorage.getItem("mpai-quick-part-history");
+      q = localStorage.getItem("mpai-quick-part-history"),
+      u = localStorage.getItem("mpai-model-usage-v1");
+    const usage: ModelUsage[] = u ? JSON.parse(u) : [];
+    setModelUsage(usage);
     if (x) setSlots(JSON.parse(x));
-    else setSlots(makeSlots());
+    else setSlots(usage.length ? smartSlots(usage, date) : makeSlots());
     if (y) setSaved(JSON.parse(y));
     if (z) setProductWorks(JSON.parse(z));
     if (q) setQuickPartWorks(JSON.parse(q));
@@ -1494,6 +1543,22 @@ const [selectedChannel, setSelectedChannel] = useState("");
   };
   const changeSlot = (id: string, patch: Partial<Slot>) =>
     persist(slots.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  const chooseModelsWithAI = () => {
+    const next = smartSlots(modelUsage, date);
+    persist(next);
+  };
+  const markDone = (s: Slot) => {
+    const currentCycle = modelUsage.reduce((n, x) => Math.max(n, x.cycle || 1), 1);
+    const existing = new Set(modelUsage.map((x) => `${x.date}::${x.channel}::${x.brand}::${x.model}::${x.yearRange}`));
+    const added: ModelUsage[] = s.vehicles.filter((v) => !existing.has(`${date}::${s.channel}::${v.brand}::${v.model}::${v.yearRange}`)).map((v) => ({
+      model: v.model, brand: v.brand, yearRange: v.yearRange, channel: s.channel,
+      usedAt: new Date().toLocaleString("th-TH"), date, cycle: currentCycle,
+    }));
+    const nextUsage = [...added, ...modelUsage];
+    setModelUsage(nextUsage);
+    localStorage.setItem("mpai-model-usage-v1", JSON.stringify(nextUsage));
+    changeSlot(s.id, { status: "เสร็จแล้ว" });
+  };
  const reshuffle = (s: Slot) => {
   const family = s.vehicles[0]?.family;
 
@@ -1539,6 +1604,7 @@ const [selectedChannel, setSelectedChannel] = useState("");
     ["ตารางขายประจำวัน", CalendarDays],
     ["เลือกอะไหล่มาทำ", ShoppingBag],
     ["ช่อง TikTok", Bike],
+    ["รุ่นรถน่าขาย", Flame],
     ["รุ่นรถทั้งหมด", ClipboardList],
     ["ตระกูลอะไหล่ร่วม", Package],
     ["รายการอะไหล่", ShoppingBag],
@@ -1670,11 +1736,15 @@ const [selectedChannel, setSelectedChannel] = useState("");
                   color="bg-violet-500"
                 />
               </div>
+              <div className="mb-5 flex flex-wrap items-center gap-3 rounded-2xl border border-orange-500/30 bg-orange-500/10 p-4">
+                <div className="mr-auto"><b>AI เลือกรุ่นรถไม่ซ้ำ</b><p className="text-sm text-slate-400">เลือกรุ่นที่ยังไม่เคยทำ กระจายให้ 4 ช่อง และจำประวัติไว้ในเครื่องนี้</p></div>
+                <button onClick={chooseModelsWithAI} className="flex items-center gap-2 rounded-xl bg-orange-500 px-5 py-3 font-bold hover:bg-orange-400"><Wand2 size={18}/>AI เลือกรุ่นวันนี้</button>
+              </div>
               <PlanGrid
                 slots={slots}
                 onEdit={setSelected}
                 onShuffle={reshuffle}
-                onDone={(s) => changeSlot(s.id, { status: "เสร็จแล้ว" })}
+                onDone={markDone}
               />
             </>
           )}
@@ -1732,7 +1802,7 @@ const [selectedChannel, setSelectedChannel] = useState("");
                 slots={selectedChannel ? slots.filter((s) => s.channel === selectedChannel) : slots}
                 onEdit={setSelected}
                 onShuffle={reshuffle}
-                onDone={(s) => changeSlot(s.id, { status: "เสร็จแล้ว" })}
+                onDone={markDone}
               />
             </>
           )}
@@ -1789,6 +1859,7 @@ const [selectedChannel, setSelectedChannel] = useState("");
               </div>
             </div>
           )}
+          {page === "รุ่นรถน่าขาย" && <RecommendedModels rows={vehicles} usage={modelUsage} />}
           {page === "รุ่นรถทั้งหมด" && <VehicleTable rows={vehicles} />}{" "}
           {page === "รายการอะไหล่" && (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
@@ -2107,6 +2178,27 @@ function QuickPartSelector({
       .sort((a, b) => a.model.localeCompare(b.model))[0];
     setModel(first?.model || "");
   };
+  const chooseWithAI = () => {
+    const doneVehicle = new Set(rows.map((r) => `${r.brand}::${r.model}::${r.yearRange}`));
+    const donePair = new Set(rows.map((r) => `${r.brand}::${r.model}::${r.part}`));
+    let pool = vehicles.filter((v) => !doneVehicle.has(modelKey(v)));
+    if (pool.length === 0) pool = [...vehicles];
+    const ranked = pool
+      .map((v) => ({
+        v,
+        score: (v.generation === "รุ่นใหม่" ? 1000 : 0) - rows.filter((r) => r.brand === v.brand).length * 10 + Math.random(),
+      }))
+      .sort((a, b) => b.score - a.score);
+    const picked = ranked[0]?.v;
+    if (!picked) return;
+    let partPool = parts.filter((p) => !donePair.has(`${picked.brand}::${picked.model}::${p}`));
+    if (partPool.length === 0) partPool = [...parts];
+    const pickedPart = partPool[Math.floor(Math.random() * partPool.length)] || parts[0];
+    setBrand(picked.brand);
+    setModel(picked.model);
+    setPart(pickedPart);
+    setNote("AI เลือกให้จากรุ่นและอะไหล่ที่ยังไม่เคยทำ");
+  };
   const payload = () => ({
     brand,
     model,
@@ -2131,8 +2223,14 @@ function QuickPartSelector({
         <div className="mb-5">
           <h2 className="text-2xl font-bold">เลือกอะไหล่มาทำ</h2>
           <p className="mt-1 text-slate-400">
-            เลือกรถและอะไหล่ที่ต้องการทำเอง แล้วบันทึกย้อนหลังได้ว่าทำรุ่นไหนไปแล้ว
+            เลือกรถและอะไหล่ที่ต้องการทำเอง หรือให้ AI เลือกจากรายการที่ยังไม่เคยทำ
           </p>
+          <button
+            onClick={chooseWithAI}
+            className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl border border-orange-500/50 bg-orange-500/15 px-5 py-3 font-bold text-orange-300 transition hover:bg-orange-500/25"
+          >
+            <Wand2 size={18} /> AI เลือกยี่ห้อ + รุ่นรถ + อะไหล่ให้
+          </button>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
           <Select label="ยี่ห้อรถ" value={brand} onChange={changeBrand} options={brands} />
@@ -2407,4 +2505,18 @@ function ProductCreator({ onSave }: { onSave: (work: ProductWork) => void }) {
 }
 function Input({label,value,set,placeholder}:{label:string;value:string;set:(v:string)=>void;placeholder?:string}){return <label className="block text-sm text-slate-300">{label}<input value={value} onChange={e=>set(e.target.value)} placeholder={placeholder} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800 p-3 text-white"/></label>}
 function PromptBox({label,text,onCopy}:{label:string;text:string;onCopy:()=>void}){return <div className="mt-4"><div className="mb-2 flex items-center justify-between"><b className="text-sm">{label}</b><button onClick={onCopy} className="flex items-center gap-1 rounded-lg bg-orange-500 px-3 py-2 text-sm"><Copy size={15}/>คัดลอก Prompt รูปภาพ</button></div><textarea readOnly value={text} className="min-h-40 w-full rounded-lg border border-slate-700 bg-[#080d16] p-3 text-sm leading-6 text-slate-300"/></div>}
+function RecommendedModels({rows,usage}:{rows:Vehicle[];usage:ModelUsage[]}){
+  const brands=[...new Set(rows.map(x=>x.brand))];
+  const [active,setActive]=useState(brands[0]||"");
+  const lastByModel=new Map<string,ModelUsage>();
+  usage.forEach(x=>{const k=`${x.brand}::${x.model}::${x.yearRange}`;if(!lastByModel.has(k))lastByModel.set(k,x)});
+  const list=rows.filter(x=>x.brand===active).sort((a,b)=>{
+    const au=lastByModel.has(modelKey(a))?1:0, bu=lastByModel.has(modelKey(b))?1:0;
+    if(au!==bu)return au-bu;
+    if(a.generation!==b.generation)return a.generation==="รุ่นใหม่"?-1:1;
+    return a.model.localeCompare(b.model);
+  });
+  return <div className="space-y-5"><div className="rounded-2xl border border-orange-500/30 bg-orange-500/10 p-5"><h2 className="flex items-center gap-2 text-xl font-bold"><Flame className="text-orange-400"/>รุ่นรถน่าขาย</h2><p className="mt-2 text-sm text-slate-400">รุ่นที่ยังไม่เคยทำจะแสดงก่อน รุ่นที่ทำแล้วมีวันที่และช่องล่าสุดกำกับ</p></div><div className="flex flex-wrap gap-2">{brands.map(b=><button key={b} onClick={()=>setActive(b)} className={`rounded-lg px-4 py-2 ${active===b?'bg-orange-500':'bg-slate-800'}`}>{b}</button>)}</div><div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{list.map(v=>{const u=lastByModel.get(modelKey(v));return <div key={modelKey(v)} className="rounded-xl border border-slate-800 bg-slate-900 p-4"><div className="flex items-start justify-between gap-3"><div><b>{v.model}</b><p className="mt-1 text-sm text-slate-400">{v.yearRange} · {v.family}</p></div><span className={`shrink-0 rounded-full px-2.5 py-1 text-xs ${u?'bg-slate-800 text-slate-400':'bg-emerald-500/15 text-emerald-300'}`}>{u?'ทำแล้ว':'ยังไม่ทำ'}</span></div>{u&&<p className="mt-3 text-xs text-slate-500">ล่าสุด {u.date} · {u.channel}</p>}</div>})}</div></div>
+}
+
 function ProductWorks({rows}:{rows:ProductWork[]}){return <div>{rows.length>0&&<h2 className="mb-3 text-lg font-bold">ผลงานขายสินค้าที่บันทึก</h2>}{rows.length?<div className="space-y-3">{rows.map(w=><div key={w.id} className="rounded-xl border border-slate-800 bg-slate-900 p-5"><div className="flex flex-wrap justify-between gap-3"><div><b className="text-lg">{w.name}</b><p className="text-sm text-slate-400">{w.channel} · {w.createdAt}</p></div>{w.photos[0]&&<img src={w.photos[0]} alt={w.name} className="h-16 w-16 rounded-lg object-cover"/>}</div><p className="mt-3">{w.vehicleModel} {w.year && `· ${w.year}`} {w.partCode && `· ${w.partCode}`}</p><p className="mt-2 text-sm text-slate-400">{w.caption}</p></div>)}</div>:<Empty title="ยังไม่มีผลงานขายสินค้าที่บันทึก" text="สร้างงานขายสินค้า แล้วกดบันทึกผลงานเพื่อเก็บไว้ที่นี่"/>}</div>}
